@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  buddycore-lambda
+
+  Sample SAM Template for buddycore-lambda
+
+Metadata:
+ AWS::CloudFormation::Interface:
+  ParameterGroups:
+   - Label: {default: 'Optional parameters'}
+     Parameters:
+      - ProjectName
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+
+Parameters:
+ ProjectName:
+  Type: String
+  Description: 'Name of the project'
+  Default: 'buddycore-lambda'
+
+
+Globals:
+  Api:
+    Cors:
+        AllowMethods: "'OPTIONS,POST,GET,PUT,DELETE,PATCH'"
+        AllowHeaders: "'content-type'"
+        AllowOrigin: "'*'"
+
+Resources:
+  SqsQueueBuddyGuiderRequestSuggestion:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+      QueueName: !Sub '${ProjectName}-request-suggestion'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}'
+  
+  SnsTopicBuddyGuider:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-request-suggestion'
+      Subscription:
+       - Protocol: sqs
+         Endpoint: !GetAtt SqsQueueBuddyGuiderRequestSuggestion.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}'
+
+  DynamoDBTableBuddyGuiderRequestSuggestion:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: buddyguider_request_suggestion
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      ProvisionedThroughput:
+        ReadCapacityUnits: 0
+        WriteCapacityUnits: 0
+
+  DynamoDBTableBuddyGuiderChatGPTRequest:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: buddyguider_chatgpt_request
+      AttributeDefinitions:
+        - AttributeName: api_request_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: api_request_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      ProvisionedThroughput:
+        ReadCapacityUnits: 0
+        WriteCapacityUnits: 0
+
+  DynamoDBTableBuddyGuiderTripAdvisorRequest:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: buddyguider_tripadvisor_request
+      AttributeDefinitions:
+        - AttributeName: month_slug
+          AttributeType: S
+      KeySchema:
+        - AttributeName: month_slug
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      ProvisionedThroughput:
+        ReadCapacityUnits: 0
+        WriteCapacityUnits: 0
+
+  DynamoDBTableBuddyGuiderTripAdvisorLocation:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: buddyguider_tripadvisor_location
+      AttributeDefinitions:
+        - AttributeName: location_id
+          AttributeType: S
+        - AttributeName: place_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: location_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        -
+          IndexName: place_id-index
+          KeySchema:
+            - 
+              AttributeName: place_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      ProvisionedThroughput:
+        ReadCapacityUnits: 0
+        WriteCapacityUnits: 0
+
+  DynamoDBTableBuddyGuiderPlace:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: buddyguider_place
+      AttributeDefinitions:
+        - AttributeName: place_id
+          AttributeType: S
+        - AttributeName: place_slug
+          AttributeType: S
+        - AttributeName: suggested_count
+          AttributeType: N
+      KeySchema:
+        - AttributeName: place_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        -
+          IndexName: place_slug-index
+          KeySchema:
+            - 
+              AttributeName: place_slug
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        -
+          IndexName: place_suggested_count-index
+          KeySchema:
+            - 
+              AttributeName: suggested_count
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      ProvisionedThroughput:
+        ReadCapacityUnits: 0
+        WriteCapacityUnits: 0
+
+  BuddyGuiderCoreSuggestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-core-suggestion'
+      Timeout: 300
+      MemorySize: 128
+      CodeUri: application/
+      Handler: src.infrastructure.serverless.handlers.suggestion_sqs_handler
+      Runtime: python3.10
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: "*"
+            # TableName: !Ref DynamoDBTableBuddyGuiderRequestSuggestion
+        - SQSPollerPolicy:
+            QueueName:
+              !GetAtt SqsQueueBuddyGuiderRequestSuggestion.QueueName
+      Events:
+        SqsTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SqsQueueBuddyGuiderRequestSuggestion.Arn
+
+  BuddyGuiderGetSuggestionApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-get-suggestion'
+      Timeout: 300
+      MemorySize: 128
+      CodeUri: application/
+      Handler: src.infrastructure.serverless.handlers.get_suggestion_api_handler
+      Runtime: python3.10
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: "*"
+      Events:
+        BuddyGuider:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /api/guider/suggestion/{request_id}
+            Method: get
+
+  BuddyGuiderGetPlaceInformationApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-get-place-information'
+      Timeout: 300
+      MemorySize: 128
+      CodeUri: application/
+      Handler: src.infrastructure.serverless.handlers.get_place_information_api_handler
+      Runtime: python3.10
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: "*"
+      Events:
+        BuddyGuider:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /api/place-detail/{place_slug}
+            Method: get
+
+  BuddyGuiderFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      FunctionName: !Sub '${ProjectName}-request-suggestion'
+      Timeout: 29
+      CodeUri: application/
+      Handler: src.infrastructure.serverless.handlers.request_suggestion_api_handler
+      Runtime: python3.10
+      Policies:
+        - AmazonSNSFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: "*"
+            # TableName: !Ref DynamoDBTableBuddyGuiderRequestSuggestion
+        - SQSSendMessagePolicy:
+            QueueName:
+              !GetAtt SqsQueueBuddyGuiderRequestSuggestion.QueueName
+      Architectures:
+        - arm64
+      Events:
+        BuddyGuider:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /api/guider/suggestion
+            Method: post
+
+Outputs:
+  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
+  # Find out more about other implicit resources you can reference within SAM
+  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
+  BuddyGuiderApi:
+    Description: "API Gateway endpoint URL for Prod stage for Hello World function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/api/"
+  BuddyGuiderFunction:
+    Description: "BuddyGuider Lambda Function ARN"
+    Value: !GetAtt BuddyGuiderFunction.Arn
+  BuddyGuiderCoreSuggestionFunction:
+    Description: "Buddy Guider Core Suggestion Lambda Function ARN"
+    Value: !GetAtt BuddyGuiderCoreSuggestionFunction.Arn
+  SqsQueueBuddyGuiderRequestSuggestion:
+    Description: "Buddy Guider Request Suggestion Sqs Queue"
+    Value: !GetAtt SqsQueueBuddyGuiderRequestSuggestion.Arn
+  # SnsTopicBuddyGuider:
+  #   Description: "Buddy Guider Request Suggestion Sns Topic"
+  #   Value: !GetAtt SnsTopicBuddyGuider.Arn
+  BuddyGuiderFunctionIamRole:
+    Description: "Implicit IAM Role created for Hello World function"
+    Value: !GetAtt BuddyGuiderFunctionRole.Arn
